@@ -4,6 +4,13 @@ import SwiftUI
 
 struct MenuBarView: View {
     @ObservedObject var model: AppModel
+    private let onHeightChange: (CGFloat) -> Void
+    @State private var showSensors = false
+
+    init(model: AppModel, onHeightChange: @escaping (CGFloat) -> Void = { _ in }) {
+        self.model = model
+        self.onHeightChange = onHeightChange
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -12,30 +19,41 @@ struct MenuBarView: View {
             Divider()
                 .opacity(0.55)
 
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 14) {
-                    if let device = model.device {
-                        controls(for: device)
+            VStack(alignment: .leading, spacing: 14) {
+                if let device = model.device {
+                    controls(for: device)
+                    if showSensors {
                         sensors
-                    } else {
-                        emptyState
                     }
-
-                    if let error = model.lastError {
-                        errorBanner(error)
-                    }
+                } else {
+                    emptyState
                 }
-                .padding(14)
+
+                if let error = model.lastError {
+                    errorBanner(error)
+                }
             }
+            .padding(14)
 
             Divider()
                 .opacity(0.55)
 
             footer
         }
-        .frame(width: 360, height: 620)
+        .frame(width: 360)
+        .fixedSize(horizontal: false, vertical: true)
         .background(.regularMaterial)
         .preferredColorScheme(.dark)
+        .background {
+            GeometryReader { geometry in
+                Color.clear
+                    .preference(key: MenuBarHeightPreferenceKey.self, value: geometry.size.height)
+            }
+        }
+        .onPreferenceChange(MenuBarHeightPreferenceKey.self) { height in
+            guard height > 0 else { return }
+            onHeightChange(height)
+        }
     }
 
     private var header: some View {
@@ -65,6 +83,25 @@ struct MenuBarView: View {
 
             Spacer()
 
+            if model.device != nil {
+                Button {
+                    showSensors.toggle()
+                } label: {
+                    Image(systemName: showSensors ? "waveform.path.ecg.rectangle.fill" : "waveform.path.ecg")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(showSensors ? .cyan : .secondary)
+                        .frame(width: 26, height: 26)
+                        .background(
+                            showSensors ? Color.cyan.opacity(0.12) : Color.clear,
+                            in: Circle()
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Air quality details")
+                .accessibilityValue(showSensors ? "Shown" : "Hidden")
+                .help("Air quality details")
+            }
+
             VStack(alignment: .trailing, spacing: 1) {
                 if let temperature = model.state.roomTemperatureCelsius {
                     HStack(alignment: .firstTextBaseline, spacing: 1) {
@@ -93,51 +130,44 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private func controls(for device: DysonDevice) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Controls", systemImage: "slider.horizontal.3")
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                powerButton
 
-            powerButton
+                VStack(spacing: 6) {
+                    if device.capabilities.fanSpeed {
+                        sliderControl(
+                            accessibilityTitle: "Fan speed",
+                            systemImage: "fan",
+                            tint: .cyan,
+                            value: Double(model.state.fanSpeed ?? 1),
+                            range: 1...10,
+                            step: 1,
+                            valueText: { value in
+                                model.state.fanSpeed == nil ? "Auto" : String(Int(value.rounded()))
+                            },
+                            onCommit: { model.setFanSpeed(Int($0.rounded())) }
+                        )
+                    }
 
-            VStack(alignment: .leading, spacing: 14) {
-                if device.capabilities.fanSpeed {
-                    sliderControl(
-                        title: "Fan speed",
-                        systemImage: "fan",
-                        tint: .cyan,
-                        value: Double(model.state.fanSpeed ?? 1),
-                        range: 1...10,
-                        step: 1,
-                        minimum: "1",
-                        maximum: "10",
-                        valueText: { value in
-                            model.state.fanSpeed == nil ? "Auto" : String(Int(value.rounded()))
-                        },
-                        onCommit: { model.setFanSpeed(Int($0.rounded())) }
-                    )
+                    if device.capabilities.targetTemperature {
+                        sliderControl(
+                            accessibilityTitle: "Target temperature",
+                            systemImage: "thermometer.medium",
+                            tint: .orange,
+                            value: model.state.targetTemperatureCelsius ?? 20,
+                            range: 1...37,
+                            step: 1,
+                            valueText: { value in String(format: "%.0f°C", value) },
+                            onCommit: { model.setTargetTemperature($0) }
+                        )
+                    }
                 }
-
-                if device.capabilities.targetTemperature {
-                    sliderControl(
-                        title: "Target temperature",
-                        systemImage: "thermometer.medium",
-                        tint: .orange,
-                        value: model.state.targetTemperatureCelsius ?? 20,
-                        range: 1...37,
-                        step: 1,
-                        minimum: "1°",
-                        maximum: "37°",
-                        valueText: { value in String(format: "%.0f°C", value) },
-                        onCommit: { model.setTargetTemperature($0) }
-                    )
-                }
+                .frame(maxWidth: .infinity)
             }
-            .padding(12)
-            .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
 
             if device.capabilities.autoMode || device.capabilities.heating || device.capabilities.nightMode || device.capabilities.oscillation || device.capabilities.airflowDirection {
-                sectionTitle("Modes", systemImage: "sparkles")
-
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                HStack(spacing: 8) {
                     if device.capabilities.autoMode {
                         ModeButton(title: "Auto", systemImage: "wand.and.stars", tint: .purple, isOn: model.state.autoMode ?? false) {
                             model.setAutoMode(!(model.state.autoMode ?? false))
@@ -168,6 +198,7 @@ struct MenuBarView: View {
                         }
                     }
                 }
+                .frame(maxWidth: .infinity)
             }
 
             if device.capabilities.oscillation && device.capabilities.oscillationAngle {
@@ -180,89 +211,56 @@ struct MenuBarView: View {
         Button {
             model.setPower(!(model.state.isOn ?? false))
         } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "power")
-                    .font(.system(size: 15, weight: .semibold))
-                Text("Power")
-                    .font(.system(.body, design: .rounded).weight(.semibold))
-                Spacer()
-                Text((model.state.isOn ?? false) ? "On" : "Off")
-                    .font(.system(.subheadline, design: .rounded).weight(.semibold))
-                Image(systemName: (model.state.isOn ?? false) ? "checkmark.circle.fill" : "circle")
-            }
-            .foregroundStyle((model.state.isOn ?? false) ? Color.white : Color.primary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-            .frame(maxWidth: .infinity)
-            .background((model.state.isOn ?? false) ? Color.green.opacity(0.82) : Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            Image(systemName: "power")
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle((model.state.isOn ?? false) ? Color.white : Color.primary)
+                .frame(width: 56, height: 56)
+                .background((model.state.isOn ?? false) ? Color.green.opacity(0.82) : Color.white.opacity(0.08), in: Circle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Power")
         .accessibilityValue((model.state.isOn ?? false) ? "On" : "Off")
+        .help("Power")
     }
 
     private func sliderControl(
-        title: String,
+        accessibilityTitle: String,
         systemImage: String,
         tint: Color,
         value: Double,
         range: ClosedRange<Double>,
         step: Double,
-        minimum: String,
-        maximum: String,
         valueText: @escaping (Double) -> String,
         onCommit: @escaping (Double) -> Void
     ) -> some View {
-        SmoothSlider(
-            title: title,
+        CompactSlider(
+            accessibilityTitle: accessibilityTitle,
             systemImage: systemImage,
             tint: tint,
             value: value,
             range: range,
             step: step,
-            minimum: minimum,
-            maximum: maximum,
             valueText: valueText,
             onCommit: onCommit
         )
     }
 
     private var angleControl: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("Oscillation arc", systemImage: "arrow.left.and.right")
-                    .font(.subheadline.weight(.medium))
-                Spacer()
-                Text("\(model.state.oscillationLowAngle ?? 90)°–\(model.state.oscillationHighAngle ?? 270)°")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+        OscillationAnglePicker(
+            lowAngle: model.state.oscillationLowAngle,
+            highAngle: model.state.oscillationHighAngle,
+            isOscillating: model.state.oscillating ?? false,
+            onCommit: { low, high in
+                model.setOscillationAngles(low: low, high: high)
+            },
+            onToggle: { enabled in
+                model.setOscillation(enabled)
             }
-
-            HStack(spacing: 8) {
-                Stepper(value: Binding(
-                    get: { model.state.oscillationLowAngle ?? 90 },
-                    set: { model.setOscillationAngles(low: $0, high: model.state.oscillationHighAngle ?? 270) }
-                ), in: 5...325, step: 5) {
-                    Text("Start \(model.state.oscillationLowAngle ?? 90)°")
-                }
-
-                Stepper(value: Binding(
-                    get: { model.state.oscillationHighAngle ?? 270 },
-                    set: { model.setOscillationAngles(low: model.state.oscillationLowAngle ?? 90, high: $0) }
-                ), in: 35...355, step: 5) {
-                    Text("End \(model.state.oscillationHighAngle ?? 270)°")
-                }
-            }
-            .font(.caption)
-        }
-        .padding(12)
-        .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        )
     }
 
     private var sensors: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("Room", systemImage: "house")
-
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                 SensorTile(label: "Temperature", value: model.state.roomTemperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "—", symbol: "thermometer", tint: .orange)
                 SensorTile(label: "Humidity", value: model.state.humidity.map { String(format: "%.0f%%", $0) } ?? "—", symbol: "humidity", tint: .cyan)
@@ -336,13 +334,6 @@ struct MenuBarView: View {
         .padding(.vertical, 11)
     }
 
-    private func sectionTitle(_ title: String, systemImage: String) -> some View {
-        Label(title.uppercased(), systemImage: systemImage)
-            .font(.caption.weight(.bold))
-            .foregroundStyle(.secondary)
-            .tracking(0.7)
-    }
-
     private var connectionLabel: String {
         model.state.connection.rawValue.capitalized
     }
@@ -361,15 +352,21 @@ struct MenuBarView: View {
     }
 }
 
-private struct SmoothSlider: View {
-    let title: String
+private struct MenuBarHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct CompactSlider: View {
+    let accessibilityTitle: String
     let systemImage: String
     let tint: Color
     let value: Double
     let range: ClosedRange<Double>
     let step: Double
-    let minimum: String
-    let maximum: String
     let valueText: (Double) -> String
     let onCommit: (Double) -> Void
 
@@ -377,70 +374,57 @@ private struct SmoothSlider: View {
     @State private var isDragging = false
 
     init(
-        title: String,
+        accessibilityTitle: String,
         systemImage: String,
         tint: Color,
         value: Double,
         range: ClosedRange<Double>,
         step: Double,
-        minimum: String,
-        maximum: String,
         valueText: @escaping (Double) -> String,
         onCommit: @escaping (Double) -> Void
     ) {
-        self.title = title
+        self.accessibilityTitle = accessibilityTitle
         self.systemImage = systemImage
         self.tint = tint
         self.value = value
         self.range = range
         self.step = step
-        self.minimum = minimum
-        self.maximum = maximum
         self.valueText = valueText
         self.onCommit = onCommit
         _draftValue = State(initialValue: value)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
-                Image(systemName: systemImage)
-                    .foregroundStyle(tint)
-                    .frame(width: 18)
-                Text(title)
-                    .font(.subheadline.weight(.medium))
-                Spacer()
-                Text(valueText(isDragging ? draftValue : value))
-                    .font(.system(.subheadline, design: .rounded).weight(.semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(tint)
-            }
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 18)
 
             GeometryReader { geometry in
                 let fraction = fraction(for: isDragging ? draftValue : value)
+
                 ZStack(alignment: .leading) {
                     Capsule()
                         .fill(Color.white.opacity(0.13))
-                        .frame(height: 6)
+                        .frame(height: 5)
 
                     Capsule()
                         .fill(tint.gradient)
-                        .frame(width: max(8, geometry.size.width * fraction), height: 6)
+                        .frame(width: max(8, geometry.size.width * fraction), height: 5)
 
                     Circle()
                         .fill(tint)
-                        .frame(width: 17, height: 17)
-                        .shadow(color: tint.opacity(0.35), radius: 4, y: 1)
-                        .offset(x: max(0, min(geometry.size.width - 17, geometry.size.width * fraction - 8.5)))
+                        .frame(width: 15, height: 15)
+                        .shadow(color: tint.opacity(0.35), radius: 3)
+                        .offset(x: max(0, min(geometry.size.width - 15, geometry.size.width * fraction - 7.5)))
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { gesture in
-                            if !isDragging {
-                                isDragging = true
-                            }
+                            isDragging = true
                             draftValue = snappedValue(for: gesture.location.x, width: geometry.size.width)
                         }
                         .onEnded { gesture in
@@ -452,13 +436,29 @@ private struct SmoothSlider: View {
             }
             .frame(height: 24)
 
-            HStack {
-                Text(minimum)
-                Spacer()
-                Text(maximum)
+            Text(valueText(isDragging ? draftValue : value))
+                .font(.system(.caption, design: .rounded).weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(tint)
+                .frame(minWidth: 30, alignment: .trailing)
+        }
+        .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityTitle)
+        .accessibilityValue(valueText(isDragging ? draftValue : value))
+        .accessibilityAdjustableAction { direction in
+            let currentValue = isDragging ? draftValue : value
+            let nextValue: Double
+            switch direction {
+            case .increment:
+                nextValue = min(range.upperBound, currentValue + step)
+            case .decrement:
+                nextValue = max(range.lowerBound, currentValue - step)
+            @unknown default:
+                return
             }
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
+            draftValue = nextValue
+            onCommit(nextValue)
         }
         .onChange(of: value) { newValue in
             if !isDragging {
@@ -491,35 +491,20 @@ private struct ModeButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(isOn ? tint : .secondary)
-                    .frame(width: 20, height: 20)
-                    .background((isOn ? tint : Color.secondary).opacity(0.16), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-
-                Text(title)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
-
-                Spacer(minLength: 0)
-
-                Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
-                    .font(.caption)
-                    .foregroundStyle(isOn ? tint : Color.secondary.opacity(0.55))
-            }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 9)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isOn ? tint.opacity(0.13) : Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .stroke(isOn ? tint.opacity(0.32) : Color.clear, lineWidth: 1)
-            }
+            Image(systemName: systemImage)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(isOn ? tint : .secondary)
+                .frame(maxWidth: .infinity, minHeight: 42)
+                .background(isOn ? tint.opacity(0.13) : Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .stroke(isOn ? tint.opacity(0.32) : Color.clear, lineWidth: 1)
+                }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
         .accessibilityValue(isOn ? "On" : "Off")
+        .help(title)
     }
 }
 

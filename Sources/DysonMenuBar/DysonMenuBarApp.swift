@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = AppModel()
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
+    private var hostingController: NSViewController?
     private var modelCancellable: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -37,12 +38,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let popover = NSPopover()
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 360, height: 620)
-        popover.contentViewController = NSHostingController(
-            rootView: MenuBarView(model: model)
-                .frame(width: 360, height: 620)
-        )
         self.popover = popover
+
+        let hostingController = NSHostingController(
+            rootView: MenuBarView(model: model) { [weak self] height in
+                self?.setPopoverHeight(height)
+            }
+        )
+        self.hostingController = hostingController
+        popover.contentViewController = hostingController
+        hostingController.view.layoutSubtreeIfNeeded()
+        setPopoverHeight(hostingController.view.fittingSize.height)
+    }
+
+    private func setPopoverHeight(_ height: CGFloat) {
+        guard height.isFinite, height > 0 else { return }
+        popover?.contentSize = NSSize(width: 360, height: ceil(height))
     }
 
     private func updateStatusItem(for state: DysonState) {
