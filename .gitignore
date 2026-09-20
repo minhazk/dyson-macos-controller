@@ -1,0 +1,20 @@
+.DS_Store
+.build/
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+build/
+dist/
+*.app/
+*.dSYM/
+
+# Local credentials and provisioning material
+.env
+*.p12
+*.mobileprovision
+*.provisionprofile
+
+# Local research checkouts used during development
+work/upstream-*/

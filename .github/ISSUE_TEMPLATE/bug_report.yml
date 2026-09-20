@@ -1,0 +1,25 @@
+name: Bug report
+description: Report a reproducible problem
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: Do not include passwords, tokens, MQTT credentials, or raw unredacted payloads.
+  - type: input
+    id: model
+    attributes:
+      label: Device model
+      placeholder: HP09 / 527K
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted diagnostics
+      description: Remove serial numbers, IPs, tokens, and credentials.
