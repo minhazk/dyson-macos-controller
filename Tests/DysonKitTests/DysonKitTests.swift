@@ -69,6 +69,24 @@ final class DysonKitTests: XCTestCase {
         XCTAssertNoThrow(try DysonCommandEncoder.oscillation(enabled: true, lowAngle: 90, highAngle: 270))
     }
 
+    func testMovingOscillationSweepPreservesWidthAndSnapsDirection() {
+        let range = OscillationRange(low: 90, high: 270).shifted(by: 23)
+        XCTAssertEqual(range, OscillationRange(low: 115, high: 295))
+        XCTAssertEqual(range.high - range.low, 180)
+        XCTAssertNoThrow(try DysonCommandEncoder.oscillation(enabled: true, lowAngle: Int(range.low), highAngle: Int(range.high)))
+    }
+
+    func testMovingOscillationSweepStopsAtDeviceLimits() {
+        let range = OscillationRange(low: 90, high: 270)
+        XCTAssertEqual(range.shifted(by: -180), OscillationRange(low: 5, high: 185))
+        XCTAssertEqual(range.shifted(by: 180), OscillationRange(low: 175, high: 355))
+        XCTAssertEqual(OscillationRange(low: 5, high: 355).shifted(by: 45), OscillationRange(low: 5, high: 355))
+    }
+
+    func testMovingFixedOscillationDirectionKeepsEqualEndpoints() {
+        XCTAssertEqual(OscillationRange(low: 180, high: 180).shifted(by: -35), OscillationRange(low: 145, high: 145))
+    }
+
     func testCapabilitiesInferHP09Controls() {
         let capabilities = DysonCapabilities.inferred(model: "HP09", type: "527K", firmwareCapabilities: ["AdvanceOscillationDay1"])
         XCTAssertTrue(capabilities.heating)

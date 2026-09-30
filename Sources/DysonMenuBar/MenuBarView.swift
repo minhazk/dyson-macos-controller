@@ -175,7 +175,13 @@ struct MenuBarView: View {
                     }
 
                     if device.capabilities.heating {
-                        ModeButton(title: "Heating", systemImage: "thermometer.sun", tint: .orange, isOn: model.state.heating ?? false) {
+                        ModeButton(
+                            title: model.state.heating == true ? "Heating" : "Cooling",
+                            systemImage: model.state.heating == true ? "thermometer.sun" : "snowflake",
+                            tint: model.state.heating == true ? .orange : Color(red: 0.48, green: 0.80, blue: 1),
+                            isOn: model.state.heating ?? false,
+                            alwaysColored: true
+                        ) {
                             model.setHeatMode(!(model.state.heating ?? false))
                         }
                     }
@@ -487,23 +493,26 @@ private struct ModeButton: View {
     let systemImage: String
     let tint: Color
     let isOn: Bool
+    var alwaysColored = false
     let action: () -> Void
+
+    private var showsColor: Bool { isOn || alwaysColored }
 
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(isOn ? tint : .secondary)
+                .foregroundStyle(showsColor ? tint : .secondary)
                 .frame(maxWidth: .infinity, minHeight: 42)
-                .background(isOn ? tint.opacity(0.13) : Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .background(showsColor ? tint.opacity(0.13) : Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .stroke(isOn ? tint.opacity(0.32) : Color.clear, lineWidth: 1)
+                        .stroke(showsColor ? tint.opacity(0.32) : Color.clear, lineWidth: 1)
                 }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
-        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityValue(alwaysColored ? title : (isOn ? "On" : "Off"))
         .help(title)
     }
 }
