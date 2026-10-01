@@ -62,6 +62,16 @@ final class DysonKitTests: XCTestCase {
         XCTAssertEqual(object["time"] as? String, "1970-01-01T00:00:00Z")
     }
 
+    func testComfortHeatingCommandTurnsOnHeatAtTheRequestedTemperature() throws {
+        let data = try DysonCommandEncoder.comfortHeating(celsius: 24, now: Date(timeIntervalSince1970: 0))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let values = try XCTUnwrap(object["data"] as? [String: String])
+
+        XCTAssertEqual(values["fpwr"], "ON")
+        XCTAssertEqual(values["hmod"], "HEAT")
+        XCTAssertEqual(values["hmax"], "2972")
+    }
+
     func testCommandValidation() {
         XCTAssertThrowsError(try DysonCommandEncoder.fanSpeed(0))
         XCTAssertThrowsError(try DysonCommandEncoder.fanSpeed(11))
@@ -108,5 +118,57 @@ final class DysonKitTests: XCTestCase {
         XCTAssertEqual(backoff.nextDelay(), 4)
         backoff.reset()
         XCTAssertEqual(backoff.nextDelay(), 1)
+    }
+
+    func testComfortHeatingStartsBelowTargetAndStopsAtTarget() {
+        var controller = ComfortHeatingController(
+            targetTemperatureCelsius: 24,
+            minimumHeatingDuration: 0,
+            minimumIdleDuration: 0
+        )
+        let start = Date(timeIntervalSince1970: 0)
+
+        XCTAssertEqual(controller.evaluate(roomTemperatureCelsius: 22, now: start), .startHeating)
+        XCTAssertEqual(controller.phase, .heating)
+        XCTAssertEqual(controller.evaluate(roomTemperatureCelsius: 24, now: start.addingTimeInterval(1)), .stopHeating)
+        XCTAssertEqual(controller.phase, .idle)
+    }
+
+    func testComfortHeatingUsesHysteresisBeforeRestarting() {
+        var controller = ComfortHeatingController(
+            targetTemperatureCelsius: 24,
+            hysteresisCelsius: 0.5,
+            minimumHeatingDuration: 0,
+            minimumIdleDuration: 0
+        )
+        let start = Date(timeIntervalSince1970: 0)
+
+        XCTAssertEqual(controller.evaluate(roomTemperatureCelsius: 23, now: start), .startHeating)
+        XCTAssertEqual(controller.evaluate(roomTemperatureCelsius: 24, now: start.addingTimeInterval(1)), .stopHeating)
+        XCTAssertEqual(controller.evaluate(roomTemperatureCelsius: 23.6, now: start.addingTimeInterval(2)), .wait)
+        XCTAssertEqual(controller.evaluate(roomTemperatureCelsius: 23.5, now: start.addingTimeInterval(3)), .startHeating)
+    }
+
+    func testComfortHeatingDefaultBandIsNarrow() {
+        let controller = ComfortHeatingController(targetTemperatureCelsius: 24)
+
+        XCTAssertEqual(controller.hysteresisCelsius, 0.2, accuracy: 0.001)
+        XCTAssertEqual(controller.minimumHeatingDuration, 60, accuracy: 0.001)
+        XCTAssertEqual(controller.minimumIdleDuration, 60, accuracy: 0.001)
+    }
+
+    func testComfortHeatingHonoursMinimumDwellTimes() {
+        var controller = ComfortHeatingController(
+            targetTemperatureCelsius: 24,
+            minimumHeatingDuration: 120,
+            minimumIdleDuration: 120
+        )
+        let start = Date(timeIntervalSince1970: 0)
+
+        XCTAssertEqual(controller.evaluate(roomTemperatureCelsius: 22, now: start), .startHeating)
+        XCTAssertEqual(controller.evaluate(roomTemperatureCelsius: 24, now: start.addingTimeInterval(60)), .wait)
+        XCTAssertEqual(controller.evaluate(roomTemperatureCelsius: 24, now: start.addingTimeInterval(120)), .stopHeating)
+        XCTAssertEqual(controller.evaluate(roomTemperatureCelsius: 23.5, now: start.addingTimeInterval(180)), .wait)
+        XCTAssertEqual(controller.evaluate(roomTemperatureCelsius: 23.5, now: start.addingTimeInterval(240)), .startHeating)
     }
 }
