@@ -1,13 +1,16 @@
+import DysonKit
 import SwiftUI
 
 fileprivate enum OscillationHandle {
     case start
     case end
+    case orientation
 
     var tint: Color {
         switch self {
         case .start: return .green
         case .end: return .orange
+        case .orientation: return .cyan
         }
     }
 }
@@ -79,6 +82,16 @@ struct OscillationAnglePicker: View {
                 }
             )
             .frame(height: 236)
+
+            HStack {
+                Label("Direction", systemImage: "arrow.left.and.right.circle")
+                    .foregroundStyle(.cyan)
+                Spacer()
+                Text("\(Int((draftStart + draftEnd) / 2))° · \(Int(draftEnd - draftStart))° sweep")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            .font(.system(.caption, design: .rounded))
 
             HStack(spacing: 4) {
                 ForEach(presets) { preset in
@@ -181,11 +194,14 @@ private struct OscillationDial: View {
     @State private var dragOriginPoint: CGPoint?
     @State private var dragOriginStart: Double?
     @State private var dragOriginEnd: Double?
+    @State private var previousDragAngle: Double?
+    @State private var accumulatedRotation = 0.0
 
     var body: some View {
         GeometryReader { geometry in
             let center = CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
-            let radius = min(geometry.size.width, geometry.size.height) * 0.40
+            // Reserve room around the dial for the direction handle at every angle.
+            let radius = min(geometry.size.width, geometry.size.height) * 0.36
             let startPoint = point(center: center, radius: radius, angle: startAngle)
             let endPoint = point(center: center, radius: radius, angle: endAngle)
 
@@ -193,10 +209,19 @@ private struct OscillationDial: View {
                 OscillationDialCanvas(
                     startAngle: startAngle,
                     endAngle: endAngle,
-                    activeAngle: activeHandle == .start ? startAngle : endAngle,
+                    activeAngle: previewAngle,
                     isEnabled: isEnabled,
                     isDragging: isDragging
                 )
+
+                PurifierModelView(angle: previewAngle)
+                    .frame(width: 112, height: 168)
+                    .position(x: center.x, y: center.y - 3)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+
+                orientationHandle(center: center, radius: radius + 18)
+                    .zIndex(3)
 
                 handleHitTarget(.start, point: startPoint, center: center, radius: radius)
                     .zIndex(activeHandle == .start ? 2 : 1)
@@ -205,6 +230,61 @@ private struct OscillationDial: View {
                     .zIndex(activeHandle == .end ? 2 : 1)
             }
         }
+    }
+
+    private var previewAngle: Double {
+        guard isDragging else { return (startAngle + endAngle) / 2 }
+        switch activeHandle {
+        case .start: return startAngle
+        case .end: return endAngle
+        case .orientation: return (startAngle + endAngle) / 2
+        }
+    }
+
+    private func orientationHandle(center: CGPoint, radius: CGFloat) -> some View {
+        let midpoint = (startAngle + endAngle) / 2
+        return Image(systemName: "arrow.left.and.right")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.cyan)
+            .rotationEffect(.degrees(midpoint))
+            .frame(width: 28, height: 28)
+            .background(
+                LinearGradient(
+                    colors: [Color(red: 0.08, green: 0.19, blue: 0.24), Color(red: 0.03, green: 0.07, blue: 0.10)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: Circle()
+            )
+            .overlay {
+                Circle()
+                    .strokeBorder(
+                        LinearGradient(colors: [.cyan.opacity(0.85), .cyan.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing),
+                        lineWidth: 1
+                    )
+            }
+            .shadow(color: .black.opacity(0.35), radius: 3, y: 2)
+            .frame(width: 40, height: 40)
+            .contentShape(Circle())
+            .position(point(center: center, radius: radius, angle: midpoint))
+            .gesture(handleGesture(.orientation, center: center, radius: radius))
+            .help("Drag to move the whole sweep without changing its width")
+            .accessibilityLabel("Oscillation direction")
+            .accessibilityValue("\(Int(midpoint)) degrees, \(Int(endAngle - startAngle)) degree sweep")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: shiftSweep(by: angleStep)
+                case .decrement: shiftSweep(by: -angleStep)
+                @unknown default: return
+                }
+                onCommit(Int(startAngle.rounded()), Int(endAngle.rounded()))
+            }
+    }
+
+    private func shiftSweep(by delta: Double) {
+        let range = OscillationRange(low: startAngle, high: endAngle).shifted(by: delta)
+        startAngle = range.low
+        endAngle = range.high
     }
 
     private func handleHitTarget(
@@ -229,7 +309,9 @@ private struct OscillationDial: View {
                 if dragHandle == nil {
                     dragHandle = handle
                     activeHandle = handle
-                    let originAngle = handle == .start ? startAngle : endAngle
+                    let originAngle = handle == .orientation ? (startAngle + endAngle) / 2 : (handle == .start ? startAngle : endAngle)
+                    previousDragAngle = originAngle
+                    accumulatedRotation = 0
                     dragOriginPoint = point(center: center, radius: radius, angle: originAngle)
                     dragOriginStart = startAngle
                     dragOriginEnd = endAngle
@@ -265,12 +347,24 @@ private struct OscillationDial: View {
                 self.dragOriginPoint = nil
                 dragOriginStart = nil
                 dragOriginEnd = nil
+                previousDragAngle = nil
+                accumulatedRotation = 0
                 onEditingChanged(false)
             }
     }
 
     private func update(handle: OscillationHandle, angle: Double) {
         switch handle {
+        case .orientation:
+            guard let originStart = dragOriginStart, let originEnd = dragOriginEnd else { return }
+            var delta = angle - (previousDragAngle ?? angle)
+            if delta > 180 { delta -= 360 }
+            if delta < -180 { delta += 360 }
+            accumulatedRotation += delta
+            previousDragAngle = angle
+            let range = OscillationRange(low: originStart, high: originEnd).shifted(by: accumulatedRotation)
+            startAngle = range.low
+            endAngle = range.high
         case .start:
             startAngle = min(endAngle - minimumSweep, max(minimumAngle, snapped(angle)))
         case .end:
@@ -290,7 +384,7 @@ private struct OscillationDial: View {
         let radians = atan2(point.x - center.x, -(point.y - center.y))
         let degrees = radians * 180 / .pi
         let normalized = degrees >= 0 ? degrees : degrees + 360
-        return min(maximumAngle, max(minimumAngle, snapped(normalized)))
+        return normalized
     }
 
     private func snapped(_ value: Double) -> Double {
@@ -309,7 +403,7 @@ private struct OscillationDialCanvas: View {
     var body: some View {
         Canvas(opaque: false, colorMode: .nonLinear, rendersAsynchronously: true) { context, size in
             let center = CGPoint(x: size.width / 2, y: size.height / 2)
-            let radius = min(size.width, size.height) * 0.40
+            let radius = min(size.width, size.height) * 0.36
 
             drawDial(in: &context, center: center, radius: radius)
             drawSelection(
@@ -320,12 +414,6 @@ private struct OscillationDialCanvas: View {
                 end: endAngle,
                 enabled: isEnabled,
                 dragging: isDragging
-            )
-            drawPurifier(
-                in: &context,
-                center: center,
-                angle: activeAngle,
-                isDragging: isDragging
             )
             drawHandle(
                 in: &context,
@@ -423,88 +511,6 @@ private struct OscillationDialCanvas: View {
             with: .color(.white.opacity(isActive ? 0.95 : 0.88)),
             lineWidth: isActive ? 2.5 : 2
         )
-    }
-
-    private func drawPurifier(in context: inout GraphicsContext, center: CGPoint, angle: Double, isDragging: Bool) {
-        let yaw = (angle - 90) * .pi / 180
-        let facing = abs(cos(yaw))
-        let side = sin(yaw)
-        let headHeight: CGFloat = 94
-        let headWidth = 65 * (0.24 + CGFloat(facing) * 0.76)
-        let headCenter = CGPoint(x: center.x + CGFloat(side) * 3, y: center.y - 17)
-        let baseCenterY = center.y + 53
-
-        let shadow = CGRect(x: center.x - 38, y: baseCenterY + 15, width: 76, height: 11)
-        context.fill(Path(ellipseIn: shadow), with: .color(.black.opacity(0.46)))
-
-        let baseRect = CGRect(x: center.x - 32, y: baseCenterY - 15, width: 64, height: 31)
-        let base = Path(roundedRect: baseRect, cornerRadius: 8)
-        context.fill(
-            base,
-            with: .linearGradient(
-                Gradient(colors: [
-                    Color.white.opacity(0.94),
-                    Color(red: 0.38, green: 0.44, blue: 0.50),
-                    Color.white.opacity(0.78)
-                ]),
-                startPoint: CGPoint(x: baseRect.minX, y: baseRect.minY),
-                endPoint: CGPoint(x: baseRect.maxX, y: baseRect.maxY)
-            )
-        )
-        context.stroke(base, with: .color(.white.opacity(0.36)), lineWidth: 1)
-
-        let vents = Path { path in
-            for row in 0..<4 {
-                for column in 0..<8 {
-                    let x = baseRect.minX + 9 + CGFloat(column) * 6.3
-                    let y = baseRect.minY + 11 + CGFloat(row) * 4.5
-                    path.addEllipse(in: CGRect(x: x, y: y, width: 1.8, height: 1.5))
-                }
-            }
-        }
-        context.fill(vents, with: .color(.black.opacity(0.34)))
-
-        let displayWidth = 17 * (0.48 + CGFloat(facing) * 0.52)
-        let displayRect = CGRect(x: center.x - displayWidth / 2, y: baseRect.minY + 4, width: displayWidth, height: 7)
-        context.fill(Path(ellipseIn: displayRect), with: .color(.black.opacity(0.78)))
-        context.fill(Path(ellipseIn: CGRect(x: center.x - 1.7, y: displayRect.midY - 1.7, width: 3.4, height: 3.4)), with: .color(.cyan.opacity(0.85)))
-
-        let stem = Path { path in
-            path.move(to: CGPoint(x: center.x - 6, y: headCenter.y + headHeight / 2 - 1))
-            path.addLine(to: CGPoint(x: center.x + 6, y: headCenter.y + headHeight / 2 - 1))
-            path.addLine(to: CGPoint(x: center.x + 10, y: baseRect.minY + 4))
-            path.addLine(to: CGPoint(x: center.x - 10, y: baseRect.minY + 4))
-            path.closeSubpath()
-        }
-        context.fill(stem, with: .color(.white.opacity(0.72)))
-
-        let outerRect = CGRect(x: headCenter.x - headWidth / 2, y: headCenter.y - headHeight / 2, width: headWidth, height: headHeight)
-        let innerRect = outerRect.insetBy(dx: max(5, headWidth * 0.22), dy: 17)
-        let outerRadius = min(20, headWidth * 0.38)
-        let innerRadius = min(13, innerRect.width * 0.42)
-
-        context.fill(Path(roundedRect: innerRect, cornerRadius: innerRadius), with: .color(.black.opacity(0.42)))
-
-        var ring = Path()
-        ring.addRoundedRect(in: outerRect, cornerSize: CGSize(width: outerRadius, height: outerRadius), style: .continuous)
-        ring.addRoundedRect(in: innerRect, cornerSize: CGSize(width: innerRadius, height: innerRadius), style: .continuous)
-        context.fill(
-            ring,
-            with: .linearGradient(
-                Gradient(colors: [
-                    Color.white.opacity(isDragging ? 0.99 : 0.92),
-                    Color(red: 0.60, green: 0.66, blue: 0.72),
-                    Color.white.opacity(0.78)
-                ]),
-                startPoint: CGPoint(x: outerRect.minX, y: outerRect.minY),
-                endPoint: CGPoint(x: outerRect.maxX, y: outerRect.maxY)
-            ),
-            style: FillStyle(eoFill: true)
-        )
-        context.stroke(Path(roundedRect: outerRect, cornerRadius: outerRadius), with: .color(.white.opacity(0.92)), lineWidth: 1)
-
-        let highlight = CGRect(x: outerRect.minX + max(2, headWidth * 0.11), y: outerRect.minY + 8, width: max(1.5, headWidth * 0.13), height: outerRect.height - 16)
-        context.fill(Path(roundedRect: highlight, cornerRadius: 2), with: .color(.white.opacity(0.30)))
     }
 
     private func point(center: CGPoint, radius: CGFloat, angle: Double) -> CGPoint {

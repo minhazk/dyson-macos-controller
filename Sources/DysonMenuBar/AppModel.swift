@@ -9,6 +9,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var state = DysonState()
     @Published private(set) var lastError: String?
     @Published private(set) var diagnostics: [String] = []
+    @Published private(set) var comfortHeatingEnabled = false
     @Published var launchAtLogin = false
 
     @Published var manualName = "Dyson HP09"
@@ -33,6 +34,10 @@ final class AppModel: ObservableObject {
     private var stored: StoredProvisioning?
     private var transport: LocalMQTTTransport?
     private var transportTask: Task<Void, Never>?
+    private var comfortHeatingTask: Task<Void, Never>?
+    private var comfortHeatingController: ComfortHeatingController?
+    private var comfortHeatingTargetCelsius = 24.0
+    private var lastComfortCommandAt: Date?
     private var settingsWindowController: SettingsWindowController?
 
     init() {
@@ -48,6 +53,7 @@ final class AppModel: ObservableObject {
     deinit {
         let previousTransport = transport
         transportTask?.cancel()
+        comfortHeatingTask?.cancel()
         Task { await previousTransport?.stop() }
     }
 
@@ -188,11 +194,70 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func setPower(_ on: Bool) { send { try DysonCommandEncoder.power(on) } }
-    func setFanSpeed(_ speed: Int) { send { try DysonCommandEncoder.fanSpeed(speed) } }
-    func setAutoMode(_ enabled: Bool) { send { try DysonCommandEncoder.autoMode(enabled) } }
-    func setHeatMode(_ enabled: Bool) { send { try DysonCommandEncoder.heatMode(enabled) } }
-    func setTargetTemperature(_ celsius: Double) { send { try DysonCommandEncoder.targetTemperature(celsius: celsius) } }
+    func setPower(_ on: Bool) {
+        stopComfortHeatingForManualChange()
+        send { try DysonCommandEncoder.power(on) }
+    }
+
+    func setFanSpeed(_ speed: Int) {
+        stopComfortHeatingForManualChange()
+        send { try DysonCommandEncoder.fanSpeed(speed) }
+    }
+
+    func setAutoMode(_ enabled: Bool) {
+        stopComfortHeatingForManualChange()
+        send { try DysonCommandEncoder.autoMode(enabled) }
+    }
+
+    func setHeatMode(_ enabled: Bool) {
+        stopComfortHeatingForManualChange()
+        send { try DysonCommandEncoder.heatMode(enabled) }
+    }
+
+    func setTargetTemperature(_ celsius: Double) {
+        stopComfortHeatingForManualChange()
+        send { try DysonCommandEncoder.targetTemperature(celsius: celsius) }
+    }
+
+    func toggleComfortHeating() {
+        if comfortHeatingEnabled {
+            comfortHeatingEnabled = false
+            comfortHeatingTask?.cancel()
+            comfortHeatingTask = nil
+            comfortHeatingController = nil
+            lastComfortCommandAt = nil
+            appendDiagnostic("Comfort heating disabled; leaving the device in its current state.")
+            return
+        }
+
+        guard device?.capabilities.heating == true else {
+            lastError = "Comfort heating is not available for this device."
+            return
+        }
+
+        comfortHeatingTargetCelsius = state.targetTemperatureCelsius ?? 24
+        comfortHeatingController = ComfortHeatingController(
+            targetTemperatureCelsius: comfortHeatingTargetCelsius,
+            hysteresisCelsius: 0.2,
+            minimumHeatingDuration: 60,
+            minimumIdleDuration: 60
+        )
+        comfortHeatingEnabled = true
+        lastComfortCommandAt = nil
+        appendDiagnostic(String(format: "Comfort heating enabled at %.1f°C.", comfortHeatingTargetCelsius))
+
+        comfortHeatingTask?.cancel()
+        comfortHeatingTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                self?.evaluateComfortHeating()
+                do {
+                    try await Task.sleep(nanoseconds: 10_000_000_000)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
     func setNightMode(_ enabled: Bool) { send { try DysonCommandEncoder.nightMode(enabled) } }
     func setAirflow(front: Bool) { send { try DysonCommandEncoder.airflow(front: front) } }
     func setOscillation(_ enabled: Bool) {
@@ -322,10 +387,76 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func stopComfortHeatingForManualChange() {
+        guard comfortHeatingEnabled else { return }
+        comfortHeatingEnabled = false
+        comfortHeatingTask?.cancel()
+        comfortHeatingTask = nil
+        comfortHeatingController = nil
+        lastComfortCommandAt = nil
+        appendDiagnostic("Comfort heating disabled by a manual control change.")
+    }
+
+    private func evaluateComfortHeating() {
+        guard comfortHeatingEnabled,
+              state.connection == .connected,
+              let roomTemperature = state.roomTemperatureCelsius,
+              var controller = comfortHeatingController
+        else { return }
+
+        let now = Date()
+        let action = controller.evaluate(roomTemperatureCelsius: roomTemperature, now: now)
+        comfortHeatingController = controller
+
+        switch action {
+        case .startHeating:
+            sendComfortHeatingCommand(at: now)
+            appendDiagnostic(String(format: "Comfort heating started at %.1f°C.", roomTemperature))
+
+        case .stopHeating:
+            sendComfortStopCommand(at: now)
+            appendDiagnostic(String(format: "Comfort heating stopped at %.1f°C.", roomTemperature))
+
+        case .wait:
+            retryComfortCommandIfDeviceDidNotApply(at: now)
+        }
+    }
+
+    private func sendComfortHeatingCommand(at date: Date) {
+        send { try DysonCommandEncoder.comfortHeating(celsius: self.comfortHeatingTargetCelsius) }
+        lastComfortCommandAt = date
+    }
+
+    private func sendComfortStopCommand(at date: Date) {
+        send { try DysonCommandEncoder.power(false) }
+        lastComfortCommandAt = date
+    }
+
+    private func retryComfortCommandIfDeviceDidNotApply(at date: Date) {
+        guard let controller = comfortHeatingController,
+              let lastComfortCommandAt,
+              date.timeIntervalSince(lastComfortCommandAt) >= 20
+        else { return }
+
+        switch controller.phase {
+        case .heating where state.isOn != true || state.heating != true:
+            sendComfortHeatingCommand(at: date)
+            appendDiagnostic("Comfort heating command was not acknowledged; retrying.")
+        case .idle where state.isOn == true:
+            sendComfortStopCommand(at: date)
+            appendDiagnostic("Comfort stop command was not acknowledged; retrying.")
+        default:
+            break
+        }
+    }
+
     private func receive(_ data: Data) {
         do {
             let message = try DysonMessageParser.parse(data)
             state.apply(message)
+            if message.isStateOrEnvironment {
+                evaluateComfortHeating()
+            }
             if case .ignored(let name) = message {
                 appendDiagnostic("Ignored MQTT message \(name).")
             }

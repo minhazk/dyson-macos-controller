@@ -41,6 +41,16 @@ public enum DysonCommandEncoder {
         return try stateSet(["hmod": "HEAT", "hmax": String(format: "%04d", kelvinTenths)], now: now)
     }
 
+    public static func comfortHeating(celsius: Double, now: Date = Date()) throws -> Data {
+        guard (0.85...36.85).contains(celsius) else { throw DysonKitError.invalidValue("target temperature") }
+        let kelvinTenths = Int(((celsius + 273.15) * 10.0).rounded())
+        return try stateSet([
+            "fpwr": "ON",
+            "hmod": "HEAT",
+            "hmax": String(format: "%04d", kelvinTenths)
+        ], now: now)
+    }
+
     public static func oscillation(
         enabled: Bool,
         lowAngle: Int? = nil,

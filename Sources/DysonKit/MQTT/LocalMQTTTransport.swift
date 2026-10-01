@@ -232,7 +232,10 @@ public actor LocalMQTTTransport {
         while !stopped && !Task.isCancelled {
             do {
                 // Send well before the 90-second MQTT keepalive expires.
-                try await Task.sleep(nanoseconds: 30_000_000_000)
+                // Comfort heating uses this reading to avoid a cold dip at
+                // the lower threshold, so keep the supervisory loop fairly
+                // responsive without polling continuously.
+                try await Task.sleep(nanoseconds: 10_000_000_000)
                 guard !stopped && !Task.isCancelled else { return }
                 try await send(packet(type: 12, flags: 0, body: Data())) // PINGREQ.
                 mqttLogger.debug("MQTT keepalive sent")
