@@ -13,8 +13,14 @@ struct DysonMenuBarApp: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class PopoverPresentation: ObservableObject {
+    @Published var isVisible = false
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let model = AppModel()
+    private let presentation = PopoverPresentation()
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var hostingController: NSViewController?
@@ -25,6 +31,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+        statusItem.button?.image = PurifierStatusIcon.image
+        statusItem.button?.imagePosition = .imageLeading
+        statusItem.button?.imageScaling = .scaleProportionallyDown
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
         self.statusItem = statusItem
@@ -38,10 +47,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let popover = NSPopover()
         popover.behavior = .transient
+        popover.appearance = NSAppearance(named: .darkAqua)
+        popover.delegate = self
         self.popover = popover
 
         let hostingController = NSHostingController(
-            rootView: MenuBarView(model: model) { [weak self] height in
+            rootView: MenuBarView(model: model, presentation: presentation) { [weak self] height in
                 self?.setPopoverHeight(height)
             }
         )
@@ -51,6 +62,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setPopoverHeight(hostingController.view.fittingSize.height)
     }
 
+    func popoverWillShow(_ notification: Notification) {
+        presentation.isVisible = true
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        presentation.isVisible = false
+    }
+
     private func setPopoverHeight(_ height: CGFloat) {
         guard height.isFinite, height > 0 else { return }
         popover?.contentSize = NSSize(width: 360, height: ceil(height))
@@ -58,10 +77,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusItem(for state: DysonState) {
         guard let button = statusItem?.button else { return }
-        button.title = state.roomTemperatureCelsius.map { String(format: "%.1f°", $0) } ?? "—°"
-        button.image = nil
-        button.imagePosition = .noImage
+        let temperature = state.roomTemperatureCelsius.flatMap { $0.isFinite ? $0 : nil }
+        button.title = " " + (temperature.map { String(format: "%.0f°", $0.rounded()) } ?? "—°")
         button.toolTip = state.roomTemperatureCelsius.map { String(format: "Dyson Controller • %.1f°C", $0) } ?? "Dyson Controller"
+        button.setAccessibilityLabel(temperature.map { String(format: "Dyson fan, room temperature %.1f degrees Celsius", $0) } ?? "Dyson fan, room temperature unavailable")
     }
 
     @objc private func togglePopover() {
