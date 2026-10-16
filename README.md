@@ -6,29 +6,32 @@ Unofficial native macOS menu-bar controller for compatible Dyson air-treatment d
 
 ## Status
 
-The initial tested target is the Dyson Purifier Hot+Cool Formaldehyde HP09 (`527K`). The repository contains a functioning fixture-tested MVP core, a native `MenuBarExtra` shell, local MQTT transport, Bonjour discovery, Keychain storage, and MyDyson email/OTP provisioning. Live device verification still requires a physical compatible device and the user's own MyDyson account/OTP.
+The primary target is the Dyson Purifier Hot+Cool Formaldehyde HP09 (`527K`). The app has a native SwiftUI interface in an AppKit menu-bar popover, local MQTT transport, Bonjour discovery, Keychain storage, and optional MyDyson email/OTP provisioning. Automated tests cover protocol parsing, command validation, reconnect backoff, thermostat logic, and oscillation ranges; compatibility with other models still needs physical-device testing.
 
 ## Screenshot
 
-![Dyson macOS Controller](docs/screenshots/dyson-controller.png)
+<img src="docs/screenshots/dyson-controller.png" alt="Current dark menu-bar interface with fan and temperature sliders, mode buttons, and a 3D oscillation dial with sideways airflow" width="360">
 
-The screenshot shows the intended menu-bar control surface. Values and connection state depend on the connected device.
+The current interface, rendered from the app's SwiftUI and SceneKit views with sample values. The airflow preview animates while the popover is open and the connected device is on; it respects Reduce Motion. Actual readings and available controls depend on the device.
 
 ## Supported functionality
 
 - Power and fan speed 1–10.
 - Auto mode, heating, target temperature, oscillation, custom oscillation angles, airflow direction, and night mode.
+- A 3D oscillation preview with endpoint handles, a direction handle that moves the whole sweep, and 45°, 90°, 180°, and 350° presets on devices advertising advanced oscillation.
 - Room temperature, humidity, PM2.5, PM10, VOC index, and NO₂ index when reported by the device.
+- A purifier menu-bar icon with rounded room temperature, plus expandable air-quality details in the popover.
 - Local MQTT state subscriptions with a single connection per active device.
 - Bonjour discovery with hostname/IP manual fallback.
 - Optional MyDyson email/password/OTP provisioning.
 - Keychain-only credential storage and redacted diagnostic logging.
+- Optional launch at login from **Settings → Devices**.
 
 Controls are capability-gated so additional compatible models can be added without hardcoding the UI to HP09.
 
 ## Privacy model
 
-There is no telemetry or analytics. Cloud services are used only by the optional initial provisioning flow. Normal control stays on the local LAN. Passwords, access tokens, and MQTT credentials are not stored in plaintext or written to logs.
+There is no telemetry or analytics. The optional provisioning flow uses HTTPS to Dyson. Normal control and sensor updates stay on the local LAN over plaintext MQTT, normally on port 1883, so use a trusted private network. Access tokens and local MQTT credentials are stored in Keychain; the MyDyson password and OTP remain in memory only for login.
 
 ## Installation and first connection
 
@@ -49,17 +52,20 @@ Clone the repository, run the fixture tests, build the app bundle, and launch it
 git clone https://github.com/minhazk/dyson-macos-controller.git
 cd dyson-macos-controller
 swift test
-./scripts/build-app.sh
-open build/DysonMenuBar.app
+./script/build_and_run.sh
 ```
 
-The build script creates an ad-hoc signed app bundle for local development. If macOS shows a security prompt, open the app from Finder and confirm that you built it from this repository. Release signing and notarization are not included yet.
+If `swift test` reports that the active developer directory is Command Line Tools, run it with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` (adjust the path if Xcode is installed elsewhere).
+
+The run script selects Xcode, stops the previous app process, builds a release app at `build/DysonMenuBar.app`, signs it ad hoc with a stable local identifier requirement, and launches it. Use `./script/build_and_run.sh --verify` to run the tests before building and launching, or `--debug` for a debug build. To build without launching, use `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./scripts/build-app.sh`.
+
+If macOS shows a security prompt, open the app from Finder and confirm that you built it from this repository. Release signing and notarization are not included yet.
 
 ### Provision through MyDyson
 
 This is the easiest setup path for most users:
 
-1. Open the Dyson wind/temperature item in the macOS menu bar.
+1. Open the purifier icon and room-temperature item in the macOS menu bar.
 2. Choose **Settings**.
 3. Open the **Account** tab and select the country used when your MyDyson account was created.
 4. Enter your MyDyson email and choose **Send verification code**.
@@ -71,6 +77,8 @@ Your password and OTP are used for the login request and cleared from the form a
 
 If Bonjour cannot find the device, open **Settings → Devices**, enter the device hostname or IP address, and choose **Save host and reconnect**. A fixed DHCP lease is recommended if your router frequently changes the device's address.
 
+Enable **Launch at login** in **Settings → Devices** to start the app automatically when you sign in to macOS. Keep the app bundle at the same path after enabling it.
+
 ### Manual local MQTT setup
 
 Use this path only if you already have the device's local MQTT details. In **Settings → Devices**, enter the serial number, device model/type, MQTT port, username, password, and root topic. The host is optional when Bonjour discovery is available. Choose **Save securely and connect**; the credentials are stored in Keychain rather than plaintext configuration files.
@@ -79,7 +87,7 @@ Do not post MQTT credentials, access tokens, serial numbers, or diagnostic paylo
 
 ### What to expect
 
-- The currently tested device is the HP09 / `527K`.
+- The primary device is the HP09 / `527K`.
 - Other Wi-Fi-enabled models may work when their manifest capabilities match, but they are not all live-tested yet.
 - Controls are capability-gated, so unsupported heating, oscillation, or sensor features are hidden or disabled.
 - The app currently manages one active device at a time.
@@ -90,7 +98,8 @@ Do not post MQTT credentials, access tokens, serial numbers, or diagnostic paylo
 - Dyson's private API may change; provisioning errors should be handled through the manual setup flow.
 - A live Dyson device is not available in CI, so CI uses only synthetic MQTT fixtures.
 - Heating and custom oscillation controls are hidden or disabled when the manifest does not advertise the required capability.
-- The app currently focuses on one active device in the menu bar; the settings model is ready for multiple stored devices.
+- The app stores and manages one active device at a time; there is no multi-device picker.
+- The internal comfort-heating controller is disabled by default and has no user-facing toggle.
 
 ## Acknowledgements
 
