@@ -90,15 +90,15 @@ struct PurifierModelView: NSViewRepresentable {
         innerPath.flatness = 0.15
         let lining = SCNShape(path: innerPath, extrusionDepth: 0.7)
         lining.chamferRadius = 0.25
-        let blue = material(.init(red: 0.23, green: 0.40, blue: 0.49, alpha: 1), metalness: 0.6, roughness: 0.3)
-        add(lining, material: blue, at: SCNVector3(0, 0, 7.6), to: model)
+        let graphite = material(.init(white: 0.27, alpha: 1), metalness: 0.6, roughness: 0.3)
+        add(lining, material: graphite, at: SCNVector3(0, 0, 7.6), to: model)
 
         let display = SCNBox(width: 11, height: 9, length: 1.4, chamferRadius: 3)
         add(display, material: dark, at: SCNVector3(0, -32, 24), to: model)
         let indicator = SCNBox(width: 4, height: 1, length: 0.3, chamferRadius: 0.3)
-        let cyan = material(.cyan, metalness: 0, roughness: 0.4)
-        cyan.emission.contents = NSColor.cyan.withAlphaComponent(0.5)
-        add(indicator, material: cyan, at: SCNVector3(0, -32, 25), to: model)
+        let indicatorMaterial = material(.init(white: 0.85, alpha: 1), metalness: 0, roughness: 0.4)
+        indicatorMaterial.emission.contents = NSColor(white: 0.75, alpha: 0.5)
+        add(indicator, material: indicatorMaterial, at: SCNVector3(0, -32, 25), to: model)
         return model
     }
 

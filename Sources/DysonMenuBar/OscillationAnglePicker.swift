@@ -8,9 +8,9 @@ fileprivate enum OscillationHandle {
 
     var tint: Color {
         switch self {
-        case .start: return .green
-        case .end: return .orange
-        case .orientation: return .cyan
+        case .start: return ControllerStyle.accent
+        case .end: return ControllerStyle.text
+        case .orientation: return ControllerStyle.accent
         }
     }
 }
@@ -39,6 +39,9 @@ struct OscillationAnglePicker: View {
     let lowAngle: Int?
     let highAngle: Int?
     let isOscillating: Bool
+    let isAirflowActive: Bool
+    let fanSpeed: Int
+    let frontAirflow: Bool
     let onCommit: (Int, Int) -> Void
     let onToggle: (Bool) -> Void
 
@@ -52,12 +55,18 @@ struct OscillationAnglePicker: View {
         lowAngle: Int?,
         highAngle: Int?,
         isOscillating: Bool,
+        isAirflowActive: Bool,
+        fanSpeed: Int,
+        frontAirflow: Bool,
         onCommit: @escaping (Int, Int) -> Void,
         onToggle: @escaping (Bool) -> Void
     ) {
         self.lowAngle = lowAngle
         self.highAngle = highAngle
         self.isOscillating = isOscillating
+        self.isAirflowActive = isAirflowActive
+        self.fanSpeed = fanSpeed
+        self.frontAirflow = frontAirflow
         self.onCommit = onCommit
         self.onToggle = onToggle
         _draftStart = State(initialValue: Double(lowAngle ?? 90))
@@ -73,6 +82,9 @@ struct OscillationAnglePicker: View {
                 activeHandle: $activeHandle,
                 isEnabled: localEnabled,
                 isDragging: isDragging,
+                isAirflowActive: isAirflowActive,
+                fanSpeed: fanSpeed,
+                frontAirflow: frontAirflow,
                 onEditingChanged: { editing in
                     isDragging = editing
                 },
@@ -81,29 +93,40 @@ struct OscillationAnglePicker: View {
                     onCommit(start, end)
                 }
             )
-            .frame(height: 236)
+            .frame(height: 226)
 
             HStack {
                 Label("Direction", systemImage: "arrow.left.and.right.circle")
-                    .foregroundStyle(.cyan)
+                    .foregroundStyle(ControllerStyle.text)
                 Spacer()
                 Text("\(Int((draftStart + draftEnd) / 2))° · \(Int(draftEnd - draftStart))° sweep")
                     .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(ControllerStyle.secondary)
             }
-            .font(.system(.caption, design: .rounded))
+            .font(.system(size: 11))
 
             HStack(spacing: 4) {
                 ForEach(presets) { preset in
                     presetButton(preset)
                 }
             }
+            .padding(3)
+            .background(ControllerStyle.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(ControllerStyle.outline.opacity(0.7), lineWidth: 0.75)
+            }
         }
         .padding(10)
         .background(
-            Color.black.opacity(0.22),
+            Color.black.opacity(0.25),
             in: RoundedRectangle(cornerRadius: 15, style: .continuous)
         )
+        .overlay {
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .strokeBorder(ControllerStyle.outline.opacity(0.7), lineWidth: 0.75)
+                .allowsHitTesting(false)
+        }
         .onChange(of: lowAngle) { newValue in
             guard !isDragging else { return }
             draftStart = constrainedStart(Double(newValue ?? 90), end: draftEnd)
@@ -127,11 +150,11 @@ struct OscillationAnglePicker: View {
             apply(preset)
         } label: {
             Text(preset.title)
-                .font(.system(.caption, design: .rounded).weight(selected ? .semibold : .regular))
-                .foregroundStyle(selected ? Color.white : Color.secondary)
+                .font(.system(size: 11, weight: selected ? .semibold : .regular))
+                .foregroundStyle(selected ? ControllerStyle.text : ControllerStyle.secondary)
                 .frame(maxWidth: .infinity, minHeight: 30)
                 .background(
-                    selected ? Color.white.opacity(0.14) : Color.clear,
+                    selected ? ControllerStyle.sliderFill.opacity(0.65) : Color.clear,
                     in: Capsule()
                 )
         }
@@ -187,6 +210,9 @@ private struct OscillationDial: View {
 
     let isEnabled: Bool
     let isDragging: Bool
+    let isAirflowActive: Bool
+    let fanSpeed: Int
+    let frontAirflow: Bool
     let onEditingChanged: (Bool) -> Void
     let onCommit: (Int, Int) -> Void
 
@@ -214,6 +240,8 @@ private struct OscillationDial: View {
                     isDragging: isDragging
                 )
 
+                PurifierAirflowView(angle: previewAngle, fanSpeed: fanSpeed, frontAirflow: frontAirflow, isActive: isAirflowActive)
+
                 PurifierModelView(angle: previewAngle)
                     .frame(width: 112, height: 168)
                     .position(x: center.x, y: center.y - 3)
@@ -229,6 +257,7 @@ private struct OscillationDial: View {
                 handleHitTarget(.end, point: endPoint, center: center, radius: radius)
                     .zIndex(activeHandle == .end ? 2 : 1)
             }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
     }
 
@@ -245,12 +274,12 @@ private struct OscillationDial: View {
         let midpoint = (startAngle + endAngle) / 2
         return Image(systemName: "arrow.left.and.right")
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.cyan)
+            .foregroundStyle(ControllerStyle.accent)
             .rotationEffect(.degrees(midpoint))
             .frame(width: 28, height: 28)
             .background(
                 LinearGradient(
-                    colors: [Color(red: 0.08, green: 0.19, blue: 0.24), Color(red: 0.03, green: 0.07, blue: 0.10)],
+                    colors: [ControllerStyle.raisedSurface, ControllerStyle.surface],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 ),
@@ -259,7 +288,7 @@ private struct OscillationDial: View {
             .overlay {
                 Circle()
                     .strokeBorder(
-                        LinearGradient(colors: [.cyan.opacity(0.85), .cyan.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing),
+                        LinearGradient(colors: [ControllerStyle.accent.opacity(0.75), ControllerStyle.outline], startPoint: .topLeading, endPoint: .bottomTrailing),
                         lineWidth: 1
                     )
             }
@@ -420,7 +449,7 @@ private struct OscillationDialCanvas: View {
                 center: center,
                 radius: radius,
                 angle: startAngle,
-                color: .green,
+                color: ControllerStyle.accent,
                 isActive: isDragging && abs(activeAngle - startAngle) < 0.1,
                 isEnabled: isEnabled
             )
@@ -429,7 +458,7 @@ private struct OscillationDialCanvas: View {
                 center: center,
                 radius: radius,
                 angle: endAngle,
-                color: .orange,
+                color: ControllerStyle.text,
                 isActive: isDragging && abs(activeAngle - endAngle) < 0.1,
                 isEnabled: isEnabled
             )
@@ -437,8 +466,8 @@ private struct OscillationDialCanvas: View {
         .background(
             LinearGradient(
                 colors: [
-                    Color(red: 0.025, green: 0.035, blue: 0.05),
-                    Color.black.opacity(0.90)
+                    ControllerStyle.background,
+                    Color.black
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -451,13 +480,13 @@ private struct OscillationDialCanvas: View {
 
     private func drawDial(in context: inout GraphicsContext, center: CGPoint, radius: CGFloat) {
         let disc = Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
-        context.fill(disc, with: .color(Color.white.opacity(0.055)))
-        context.stroke(disc, with: .color(Color.white.opacity(0.10)), lineWidth: 1)
+        context.fill(disc, with: .color(ControllerStyle.text.opacity(0.025)))
+        context.stroke(disc, with: .color(ControllerStyle.outline.opacity(0.65)), lineWidth: 1)
 
         var topGuide = Path()
         topGuide.move(to: point(center: center, radius: radius + 3, angle: 0))
         topGuide.addLine(to: point(center: center, radius: radius + 18, angle: 0))
-        context.stroke(topGuide, with: .color(.white.opacity(0.18)), lineWidth: 2)
+        context.stroke(topGuide, with: .color(ControllerStyle.accent.opacity(0.25)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
     }
 
     private func drawSelection(
@@ -476,20 +505,20 @@ private struct OscillationDialCanvas: View {
         }
         sector.addLine(to: point(center: center, radius: radius, angle: end))
         sector.closeSubpath()
-        context.fill(sector, with: .color(.white.opacity(enabled ? (dragging ? 0.24 : 0.18) : 0.025)))
+        context.fill(sector, with: .color(ControllerStyle.accent.opacity(enabled ? (dragging ? 0.24 : 0.18) : 0.025)))
 
         var arc = Path()
         arc.move(to: point(center: center, radius: radius, angle: start))
         for value in stride(from: start, through: end, by: 3) {
             arc.addLine(to: point(center: center, radius: radius, angle: value))
         }
-        context.stroke(arc, with: .color(.white.opacity(enabled ? 0.38 : 0.08)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+        context.stroke(arc, with: .color(ControllerStyle.accent.opacity(enabled ? 0.6 : 0.12)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
 
         for value in [start, end] {
             var spoke = Path()
             spoke.move(to: center)
             spoke.addLine(to: point(center: center, radius: radius, angle: value))
-            context.stroke(spoke, with: .color(.white.opacity(enabled ? 0.22 : 0.08)), lineWidth: 1)
+            context.stroke(spoke, with: .color(ControllerStyle.accent.opacity(enabled ? 0.25 : 0.08)), lineWidth: 1)
         }
     }
 
@@ -508,7 +537,7 @@ private struct OscillationDialCanvas: View {
         context.fill(Path(ellipseIn: rect), with: .color(isEnabled ? color : .gray.opacity(0.75)))
         context.stroke(
             Path(ellipseIn: rect.insetBy(dx: -4, dy: -4)),
-            with: .color(.white.opacity(isActive ? 0.95 : 0.88)),
+            with: .color(ControllerStyle.text.opacity(isActive ? 0.95 : 0.88)),
             lineWidth: isActive ? 2.5 : 2
         )
     }
