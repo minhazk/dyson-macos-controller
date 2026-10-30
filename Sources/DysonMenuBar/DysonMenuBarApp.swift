@@ -60,6 +60,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.contentViewController = hostingController
         hostingController.view.layoutSubtreeIfNeeded()
         setPopoverHeight(hostingController.view.fittingSize.height)
+
+        if CommandLine.arguments.contains("--settings") {
+            model.showSettingsWindow()
+        }
+        if CommandLine.arguments.contains("--refresh-credentials") {
+            model.refreshLocalCredentials()
+        }
     }
 
     func popoverWillShow(_ notification: Notification) {

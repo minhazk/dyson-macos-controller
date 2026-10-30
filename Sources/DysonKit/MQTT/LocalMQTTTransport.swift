@@ -17,8 +17,8 @@ public struct ReconnectBackoff: Sendable, Equatable {
     }
 
     public mutating func nextDelay() -> UInt64 {
-        let delay = min(maximum, UInt64(pow(2.0, Double(attempt))))
-        attempt += 1
+        let delay = attempt < 64 ? min(maximum, UInt64(1) << attempt) : maximum
+        attempt = min(attempt + 1, 64)
         return delay
     }
 }
@@ -30,16 +30,30 @@ public actor LocalMQTTTransport {
 
     private let configuration: LocalDeviceConfiguration
     private let serial: String
+    private let clientIdentifier = "dyson" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(18)
     private var connection: NWConnection?
     private var keepAliveTask: Task<Void, Never>?
     private var environmentalRefreshTask: Task<Void, Never>?
     private var stopped = false
     private var packetIdentifier: UInt16 = 0
     private var receiveBuffer = Data()
+    private var awaitingPingResponse = false
+    private var useMQTT311 = false
+    private let connectionTimeoutNanoseconds: UInt64
+    private let keepAliveIntervalNanoseconds: UInt64
 
     public init(serial: String, configuration: LocalDeviceConfiguration) {
         self.serial = serial
         self.configuration = configuration
+        self.connectionTimeoutNanoseconds = 10_000_000_000
+        self.keepAliveIntervalNanoseconds = 10_000_000_000
+    }
+
+    init(serial: String, configuration: LocalDeviceConfiguration, connectionTimeoutNanoseconds: UInt64, keepAliveIntervalNanoseconds: UInt64) {
+        self.serial = serial
+        self.configuration = configuration
+        self.connectionTimeoutNanoseconds = connectionTimeoutNanoseconds
+        self.keepAliveIntervalNanoseconds = keepAliveIntervalNanoseconds
     }
 
     public func run(onMessage: @escaping MessageHandler, onStatus: @escaping StatusHandler, onError: @escaping ErrorHandler) async {
@@ -50,21 +64,19 @@ public actor LocalMQTTTransport {
             do {
                 onStatus(.connecting)
                 try await connectWithTimeout()
-                mqttLogger.notice("MQTT TCP and CONNECT handshake completed")
-                try await subscribe(to: statusTopic)
-                mqttLogger.notice("MQTT status subscription completed")
+                guard !stopped, !Task.isCancelled, let activeConnection = connection else { break }
                 backoff.reset()
                 onStatus(.connected)
                 keepAliveTask?.cancel()
                 keepAliveTask = Task { [weak self] in
-                    await self?.keepAliveLoop()
+                    await self?.keepAliveLoop(connection: activeConnection)
                 }
 
                 try await publish(topic: commandTopic, payload: try DysonCommandEncoder.requestCurrentState())
                 try await publish(topic: commandTopic, payload: try DysonCommandEncoder.requestEnvironmentalData())
                 environmentalRefreshTask?.cancel()
                 environmentalRefreshTask = Task { [weak self] in
-                    await self?.environmentalRefreshLoop()
+                    await self?.environmentalRefreshLoop(connection: activeConnection)
                 }
                 try await readMessages(onMessage: onMessage)
 
@@ -72,11 +84,12 @@ public actor LocalMQTTTransport {
                     throw DysonKitError.transport("The MQTT connection closed.")
                 }
             } catch {
-                mqttLogger.error("MQTT transport failed: \(error.localizedDescription, privacy: .public)")
-                onError(error.localizedDescription)
                 await shutdownConnection()
                 if stopped || Task.isCancelled { break }
+                mqttLogger.error("MQTT transport failed: \(error.localizedDescription, privacy: .public)")
+                onError(error.localizedDescription)
                 onStatus(.reconnecting)
+                useMQTT311.toggle()
                 let delay = backoff.nextDelay()
                 try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
             }
@@ -105,7 +118,8 @@ public actor LocalMQTTTransport {
 
     private func connect() async throws {
         guard let host = configuration.host, !host.isEmpty,
-              let port = NWEndpoint.Port(rawValue: UInt16(configuration.port))
+              let rawPort = UInt16(exactly: configuration.port),
+              let port = NWEndpoint.Port(rawValue: rawPort)
         else {
             throw DysonKitError.transport("A valid local MQTT hostname and port are required.")
         }
@@ -114,21 +128,27 @@ public actor LocalMQTTTransport {
         self.connection = connection
         receiveBuffer.removeAll(keepingCapacity: true)
 
+        // Cancellation must cover CONNECT and SUBSCRIBE too. Cancelling a task
+        // alone does not resume Network.framework's pending I/O callbacks.
         try await withTaskCancellationHandler(operation: {
-            try await waitUntilReady(connection)
-        }, onCancel: {
-            connection.cancel()
-        })
+            try Task.checkCancellation()
+            try await performHandshake(connection)
+        }, onCancel: { connection.cancel() })
+    }
+
+    private func performHandshake(_ connection: NWConnection) async throws {
+        try await waitUntilReady(connection)
         mqttLogger.notice("MQTT TCP connection ready")
 
         var connectBody = Data()
-        connectBody.append(try encodeString("MQIsdp"))
-        connectBody.append(3) // MQTT 3.1, used by the Dyson local broker.
+        connectBody.append(try encodeString(useMQTT311 ? "MQTT" : "MQIsdp"))
+        connectBody.append(useMQTT311 ? 4 : 3)
+        mqttLogger.notice("MQTT protocol level \(self.useMQTT311 ? 4 : 3, privacy: .public)")
         connectBody.append(0xC2) // Clean session + username + password.
         connectBody.append(contentsOf: [0, 90]) // 90-second keep-alive.
-        // MQTT 3.1 brokers commonly enforce the 23-byte client identifier
-        // limit. Dyson clients use the device serial as the identifier.
-        connectBody.append(try encodeString(serial))
+        // Keep MQTT 3.1's 23-byte limit while giving this controller its own
+        // session, independent of stale sessions or other Dyson clients.
+        connectBody.append(try encodeString(clientIdentifier))
         connectBody.append(try encodeString(configuration.username))
         connectBody.append(try encodeString(configuration.password))
         try await send(packet(type: 1, flags: 0, body: connectBody))
@@ -142,6 +162,8 @@ public actor LocalMQTTTransport {
         guard response.body[1] == 0 else {
             throw DysonKitError.transport("The Dyson MQTT broker refused the connection (code \(response.body[1])).")
         }
+        try await subscribe(to: statusTopic)
+        mqttLogger.notice("MQTT CONNECT and status subscription completed")
     }
 
     private func connectWithTimeout() async throws {
@@ -149,9 +171,9 @@ public actor LocalMQTTTransport {
             group.addTask {
                 try await self.connect()
             }
-            group.addTask {
-                try await Task.sleep(nanoseconds: 10_000_000_000)
-                throw DysonKitError.transport("MQTT connection timed out after 10 seconds.")
+            group.addTask { [connectionTimeoutNanoseconds] in
+                try await Task.sleep(nanoseconds: connectionTimeoutNanoseconds)
+                throw DysonKitError.transport("MQTT connection timed out after \(connectionTimeoutNanoseconds / 1_000_000_000) seconds.")
             }
             defer { group.cancelAll() }
             try await group.next()
@@ -208,6 +230,7 @@ public actor LocalMQTTTransport {
     }
 
     private func readMessages(onMessage: @escaping MessageHandler) async throws {
+        var receivedStatus = false
         while !stopped && !Task.isCancelled {
             let response = try await readPacket()
             switch response.type {
@@ -216,9 +239,13 @@ public actor LocalMQTTTransport {
                 let topicLength = Int(response.body[0]) << 8 | Int(response.body[1])
                 let payloadStart = 2 + topicLength
                 guard response.body.count >= payloadStart else { continue }
+                if !receivedStatus {
+                    mqttLogger.notice("MQTT device status received")
+                    receivedStatus = true
+                }
                 onMessage(Data(response.body[payloadStart...]))
             case 13:
-                break // PINGRESP.
+                awaitingPingResponse = false // PINGRESP.
             case 12:
                 // Be polite if the broker initiates its own keepalive check.
                 try await send(packet(type: 13, flags: 0, body: Data()))
@@ -228,42 +255,48 @@ public actor LocalMQTTTransport {
         }
     }
 
-    private func keepAliveLoop() async {
+    private func keepAliveLoop(connection activeConnection: NWConnection) async {
         while !stopped && !Task.isCancelled {
             do {
                 // Send well before the 90-second MQTT keepalive expires.
                 // Comfort heating uses this reading to avoid a cold dip at
                 // the lower threshold, so keep the supervisory loop fairly
                 // responsive without polling continuously.
-                try await Task.sleep(nanoseconds: 10_000_000_000)
-                guard !stopped && !Task.isCancelled else { return }
+                try await Task.sleep(nanoseconds: keepAliveIntervalNanoseconds)
+                guard !stopped, !Task.isCancelled, connection === activeConnection else { return }
+                guard !awaitingPingResponse else {
+                    mqttLogger.error("MQTT keepalive response timed out; reconnecting")
+                    activeConnection.cancel()
+                    return
+                }
+                awaitingPingResponse = true
                 try await send(packet(type: 12, flags: 0, body: Data())) // PINGREQ.
                 mqttLogger.debug("MQTT keepalive sent")
             } catch is CancellationError {
                 return
             } catch {
                 mqttLogger.error("MQTT keepalive failed: \(error.localizedDescription, privacy: .public)")
-                connection?.cancel()
+                activeConnection.cancel()
                 return
             }
         }
     }
 
-    private func environmentalRefreshLoop() async {
+    private func environmentalRefreshLoop(connection activeConnection: NWConnection) async {
         while !stopped && !Task.isCancelled {
             do {
                 // Dyson publishes the current sensor values in response to a
                 // request; refresh them at the same cadence used by the
                 // community Dyson integrations.
                 try await Task.sleep(nanoseconds: 30_000_000_000)
-                guard !stopped && !Task.isCancelled else { return }
+                guard !stopped, !Task.isCancelled, connection === activeConnection else { return }
                 try await publish(topic: commandTopic, payload: try DysonCommandEncoder.requestEnvironmentalData())
                 mqttLogger.debug("MQTT environmental data requested")
             } catch is CancellationError {
                 return
             } catch {
                 mqttLogger.error("MQTT environmental refresh failed: \(error.localizedDescription, privacy: .public)")
-                connection?.cancel()
+                activeConnection.cancel()
                 return
             }
         }
@@ -273,15 +306,18 @@ public actor LocalMQTTTransport {
         guard let connection else {
             throw DysonKitError.transport("The local MQTT connection is not open.")
         }
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            connection.send(content: data, completion: .contentProcessed { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            })
-        }
+        try await withTaskCancellationHandler(operation: {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                connection.send(content: data, completion: .contentProcessed { error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume()
+                    }
+                })
+            }
+        }, onCancel: { connection.cancel() })
     }
 
     private func readPacket() async throws -> (type: UInt8, body: Data) {
@@ -306,19 +342,22 @@ public actor LocalMQTTTransport {
             guard let connection else {
                 throw DysonKitError.transport("The Dyson MQTT connection closed.")
             }
-            let chunk = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
-                connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, isComplete, error in
-                    if let error {
-                        continuation.resume(throwing: error)
-                    } else if let data, !data.isEmpty {
-                        continuation.resume(returning: data)
-                    } else if isComplete {
-                        continuation.resume(throwing: DysonKitError.transport("The Dyson MQTT connection closed."))
-                    } else {
-                        continuation.resume(throwing: DysonKitError.transport("The Dyson MQTT broker returned no data."))
+            let chunk = try await withTaskCancellationHandler(operation: {
+                try Task.checkCancellation()
+                return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+                    connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, isComplete, error in
+                        if let error {
+                            continuation.resume(throwing: error)
+                        } else if let data, !data.isEmpty {
+                            continuation.resume(returning: data)
+                        } else if isComplete {
+                            continuation.resume(throwing: DysonKitError.transport("The Dyson MQTT connection closed."))
+                        } else {
+                            continuation.resume(throwing: DysonKitError.transport("The Dyson MQTT broker returned no data."))
+                        }
                     }
                 }
-            }
+            }, onCancel: { connection.cancel() })
             receiveBuffer.append(chunk)
         }
 
@@ -367,6 +406,7 @@ public actor LocalMQTTTransport {
         keepAliveTask = nil
         environmentalRefreshTask?.cancel()
         environmentalRefreshTask = nil
+        awaitingPingResponse = false
         connection?.cancel()
         connection = nil
         receiveBuffer.removeAll(keepingCapacity: true)
