@@ -26,7 +26,7 @@ NSStatusItem → NSPopover (SwiftUI) / Settings window
 
 Provisioning is the only cloud-dependent part and uses HTTPS. After a device is provisioned, the app uses plaintext MQTT, normally on port 1883, on a trusted local network. The cloud access token and local broker credentials are stored in Keychain and are never emitted in logs. The app persists one active provisioning record; it does not provide multi-device switching.
 
-The transport requests current state and environmental data on connection, sends MQTT keepalive traffic every 10 seconds, and refreshes environmental readings every 30 seconds. Reconnects use exponential backoff. The internal `ComfortHeatingController` is disabled by default and has no exposed UI toggle.
+The transport requests current state and environmental data on connection, sends MQTT keepalive traffic every 10 seconds, and refreshes environmental readings every 30 seconds. TCP setup, MQTT CONNECT, and SUBSCRIBE share a 10-second deadline that cancels pending socket I/O. Missing keepalive responses close the stale connection at the next 10-second check. Reconnects use exponential backoff capped at 60 seconds, including prolonged outages, and alternate MQTT 3.1 and 3.1.1 after failures for firmware compatibility. Each transport has its own MQTT client identifier within the 23-byte MQTT 3.1 limit. Explicit reconnects cancel the previous transport and ignore its late callbacks. The internal `ComfortHeatingController` is disabled by default and has no exposed UI toggle.
 
 ## Presentation and oscillation
 
@@ -36,7 +36,7 @@ The popover measures its content rather than relying on a fixed height. `Control
 
 ## Build and startup
 
-`./script/build_and_run.sh` is the build-and-launch entry point and the Codex Run action. It selects Xcode, stops the old process, builds and stages `build/DysonMenuBar.app` through `scripts/build-app.sh`, and launches the signed bundle. `--verify` also runs the fixture tests. The bundle uses an explicit ad-hoc signing requirement so its local identity remains stable across rebuilds. Launch at login uses `SMAppService.mainApp` and is configured in Devices settings.
+`./script/build_and_run.sh` is the build-and-launch entry point and the Codex Run action. It selects Xcode, builds and verifies a staged bundle through `scripts/build-app.sh`, then stops the old process, installs `/Applications/DysonMenuBar.app`, and launches it. `--verify` also runs the tests and checks the running executable path. The bundle uses an explicit ad-hoc signing requirement so its local identity remains stable across rebuilds. Launch at login uses `SMAppService.mainApp` and is configured in Devices settings.
 
 ## Protocol notes
 

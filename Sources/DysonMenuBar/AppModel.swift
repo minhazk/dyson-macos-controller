@@ -34,6 +34,7 @@ final class AppModel: ObservableObject {
     private var stored: StoredProvisioning?
     private var transport: LocalMQTTTransport?
     private var transportTask: Task<Void, Never>?
+    private var connectionGeneration = UUID()
     private var comfortHeatingTask: Task<Void, Never>?
     private var comfortHeatingController: ComfortHeatingController?
     private var comfortHeatingTargetCelsius = 24.0
@@ -74,13 +75,19 @@ final class AppModel: ObservableObject {
         }
 
         transportTask?.cancel()
+        let previousTransport = transport
+        transport = nil
+        let generation = UUID()
+        connectionGeneration = generation
         state.connection = .connecting
         appendDiagnostic("Starting local MQTT connection for \(device.model).")
 
         transportTask = Task { [weak self] in
+            await previousTransport?.stop()
             var config = stored.mqtt
             if config.host == nil {
-                config.host = await BonjourDiscovery.shared.discover(serial: device.serial)
+                let discovery = BonjourDiscovery()
+                config.host = await discovery.discover(serial: device.serial)
                 if config.host == nil {
                     config.host = BonjourDiscovery.fallbackHostname(for: device.serial)
                     if let fallback = config.host {
@@ -88,6 +95,7 @@ final class AppModel: ObservableObject {
                     }
                 }
             }
+            guard !Task.isCancelled, self?.connectionGeneration == generation else { return }
             guard let host = config.host, !host.isEmpty else {
                 await MainActor.run {
                     self?.setConnection(.failed)
@@ -98,19 +106,18 @@ final class AppModel: ObservableObject {
             }
             config.host = host
             let newTransport = LocalMQTTTransport(serial: device.serial, configuration: config)
-            await MainActor.run { [weak self] in
-                self?.transport = newTransport
-                self?.stored = StoredProvisioning(accessToken: stored.accessToken, device: device, mqtt: config)
-            }
+            self?.transport = newTransport
             await newTransport.run(
                 onMessage: { [weak self] data in
                     Task { @MainActor in
+                        guard self?.connectionGeneration == generation else { return }
                         self?.receive(data)
                     }
                 },
                 onStatus: { [weak self] status in
                     NSLog("Dyson MQTT state: %@", status.rawValue)
                     Task { @MainActor in
+                        guard self?.connectionGeneration == generation else { return }
                         self?.setConnection(status)
                         if status == .connected {
                             self?.lastError = nil
@@ -120,6 +127,7 @@ final class AppModel: ObservableObject {
                 onError: { [weak self] message in
                     NSLog("Dyson MQTT connection error: %@", message)
                     Task { @MainActor in
+                        guard self?.connectionGeneration == generation else { return }
                         self?.lastError = "MQTT connection error: \(message)"
                         self?.accountMessage = "Provisioned \(device.name), but MQTT connection failed: \(message)"
                     }
@@ -129,11 +137,47 @@ final class AppModel: ObservableObject {
     }
 
     func disconnect() {
+        connectionGeneration = UUID()
         transportTask?.cancel()
         let active = transport
         transport = nil
         Task { await active?.stop() }
         setConnection(.disconnected)
+    }
+
+    /// An explicit repair action; normal reconnects remain entirely local.
+    func refreshLocalCredentials() {
+        guard let stored, let token = stored.accessToken else {
+            appendDiagnostic("No saved MyDyson session is available to refresh local credentials.")
+            return
+        }
+        appendDiagnostic("Checking local credentials against the MyDyson device manifest…")
+        Task { [weak self] in
+            do {
+                let devices = try await self?.api.devices(accessToken: token)
+                guard let self, self.stored == stored else { return }
+                guard let cloudDevice = devices?.first(where: { $0.serialNumber == stored.device.serial }),
+                      let mqtt = cloudDevice.connectedConfiguration?.mqtt else {
+                    appendDiagnostic("MyDyson did not return local credentials for the active device.")
+                    return
+                }
+                var configuration = stored.mqtt
+                configuration.username = cloudDevice.serialNumber
+                configuration.password = try LocalCredentialDecoder.decryptPassword(mqtt.localBrokerCredentials)
+                configuration.mqttRootTopic = mqtt.mqttRootTopicLevel
+                if configuration == stored.mqtt {
+                    appendDiagnostic("Saved local credentials match the current MyDyson manifest.")
+                } else {
+                    let updated = StoredProvisioning(accessToken: token, device: stored.device, mqtt: configuration)
+                    try keychain.saveCodable(updated, account: "active-provisioning")
+                    self.stored = updated
+                    appendDiagnostic("Refreshed the active device's local credentials securely in Keychain.")
+                }
+                reconnect()
+            } catch {
+                self?.appendDiagnostic("Could not refresh local credentials: \(error.localizedDescription)")
+            }
+        }
     }
 
     func saveManualSetup() {

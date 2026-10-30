@@ -1,0 +1,14 @@
+# SwiftUI and Network.framework require the native Mac runner.
+when:
+  - event: [push, pull_request, manual]
+
+labels:
+  platform: darwin/arm64
+  backend: local
+  trusted: dyson-macos-controller
+
+steps:
+  - name: test
+    image: /bin/bash
+    commands:
+      - bash script/ci_test.sh

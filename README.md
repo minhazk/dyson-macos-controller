@@ -57,9 +57,17 @@ swift test
 
 If `swift test` reports that the active developer directory is Command Line Tools, run it with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` (adjust the path if Xcode is installed elsewhere).
 
-The run script selects Xcode, stops the previous app process, builds a release app at `build/DysonMenuBar.app`, signs it ad hoc with a stable local identifier requirement, and launches it. Use `./script/build_and_run.sh --verify` to run the tests before building and launching, or `--debug` for a debug build. To build without launching, use `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./scripts/build-app.sh`.
+The run script selects Xcode, builds and signs a release app with a stable local identifier requirement, then replaces `/Applications/DysonMenuBar.app` and launches that installed copy. The previous app keeps running until the new build passes signature verification. Your user needs write access to `/Applications`. Use `./script/build_and_run.sh --verify` to run the tests before installing and verify that the Applications copy launches, or `--debug` for a debug build. To build and install without launching, use `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./scripts/build-app.sh`; this stops the previous app before replacing it.
 
 If macOS shows a security prompt, open the app from Finder and confirm that you built it from this repository. Release signing and notarization are not included yet.
+
+For connection troubleshooting, `./script/build_and_run.sh --settings` opens Devices settings after installing. `--refresh-credentials` also explicitly checks the active device's local credentials against MyDyson using the saved account session, updates Keychain if they changed, and reconnects. Results appear in Diagnostics. Normal startup and reconnects use only the local network.
+
+### Continuous integration
+
+[Foundry CI](https://ci.mkfoundry.co.uk/repos/4) runs `.woodpecker/test.yml` on its native macOS/arm64 runner with Xcode. Pull requests, pushes, and manual runs execute `script/ci_test.sh`, which acquires the host's workstation resource lease, preserves Woodpecker's isolated home and build outputs, and uses the lease's worker count for `swift test`. CI builds and tests the package without installing or launching the menu-bar app or accessing its saved device credentials.
+
+The required pull-request status is `ci/woodpecker/pr/test`; push results use `ci/woodpecker/push/test`. Fork pull requests require approval in Foundry CI before using the native runner. GitHub Actions test execution has been retired.
 
 ### Provision through MyDyson
 
@@ -77,7 +85,7 @@ Your password and OTP are used for the login request and cleared from the form a
 
 If Bonjour cannot find the device, open **Settings → Devices**, enter the device hostname or IP address, and choose **Save host and reconnect**. A fixed DHCP lease is recommended if your router frequently changes the device's address.
 
-Enable **Launch at login** in **Settings → Devices** to start the app automatically when you sign in to macOS. Keep the app bundle at the same path after enabling it.
+Enable **Launch at login** in **Settings → Devices** to start the app automatically when you sign in to macOS. Always use `/Applications/DysonMenuBar.app`: future builds replace that same copy, keeping the login-item path stable. If you previously enabled startup for a copy in another folder, remove that old entry in **System Settings → General → Login Items & Extensions** and add the Applications copy. To launch manually, open **DysonMenuBar** in Applications or run `open /Applications/DysonMenuBar.app`.
 
 ### Manual local MQTT setup
 
