@@ -63,6 +63,12 @@ If macOS shows a security prompt, open the app from Finder and confirm that you 
 
 For connection troubleshooting, `./script/build_and_run.sh --settings` opens Devices settings after installing. `--refresh-credentials` also explicitly checks the active device's local credentials against MyDyson using the saved account session, updates Keychain if they changed, and reconnects. Results appear in Diagnostics. Normal startup and reconnects use only the local network.
 
+### Continuous integration
+
+[Foundry CI](https://ci.mkfoundry.co.uk/repos/4) runs `.woodpecker/test.yml` on its native macOS/arm64 runner with Xcode. Pull requests, pushes, and manual runs execute `script/ci_test.sh`, which acquires the host's workstation resource lease, preserves Woodpecker's isolated home and build outputs, and uses the lease's worker count for `swift test`. CI builds and tests the package without installing or launching the menu-bar app or accessing its saved device credentials.
+
+The required pull-request status is `ci/woodpecker/pr/test`; push results use `ci/woodpecker/push/test`. Fork pull requests require approval in Foundry CI before using the native runner. GitHub Actions test execution has been retired.
+
 ### Provision through MyDyson
 
 This is the easiest setup path for most users:
